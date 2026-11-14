@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(OnnxRuntimeHelperTest)
+project(OnnxRuntimeHelper LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,84 +9,80 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# 设置ONNX Runtime路径（支持通过 -DONNXRUNTIME_ROOT_DIR=... 覆盖）
+set(ONNXRUNTIME_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime-v1.17.3"
+    CACHE PATH "Path to ONNX Runtime root directory")
 
-# 设置ONNX Runtime路径
-set(ONNXRUNTIME_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime-v1.17.3")
+if(NOT EXISTS "${ONNXRUNTIME_ROOT_DIR}/include/onnxruntime_cxx_api.h")
+    message(WARNING "未在 ${ONNXRUNTIME_ROOT_DIR} 找到 ONNX Runtime 头文件，请参考 docs/获取ONNX_Runtime.md 下载配置。")
+endif()
 
-# 包含目录
-include_directories(${ONNXRUNTIME_ROOT_DIR}/include)
-
-# 库目录
-link_directories(${ONNXRUNTIME_ROOT_DIR}/lib)
-
-# 创建OnnxRuntimeHelper库
-add_library(OnnxRuntimeHelper 
-    OnnxRuntimeHelper.cpp
-    OnnxRuntimeHelper.h
+# 创建 OnnxRuntimeHelper 核心库
+add_library(OnnxRuntimeHelper
+    src/OnnxRuntimeHelper.cpp
+    include/OnnxRuntimeHelper.h
 )
 
-target_include_directories(OnnxRuntimeHelper PUBLIC 
-    ${CMAKE_CURRENT_SOURCE_DIR}
+target_include_directories(OnnxRuntimeHelper PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${ONNXRUNTIME_ROOT_DIR}/include
+)
+
+target_link_directories(OnnxRuntimeHelper PUBLIC
+    ${ONNXRUNTIME_ROOT_DIR}/lib
 )
 
 # 链接ONNX Runtime库
 if(WIN32)
-    # Windows平台使用.lib导入库
-    target_link_libraries(OnnxRuntimeHelper PRIVATE 
+    target_link_libraries(OnnxRuntimeHelper PUBLIC
         "${ONNXRUNTIME_ROOT_DIR}/lib/onnxruntime.lib"
     )
 else()
-    target_link_libraries(OnnxRuntimeHelper PRIVATE onnxruntime)
+    target_link_libraries(OnnxRuntimeHelper PUBLIC onnxruntime)
+    set(CMAKE_BUILD_RPATH "${ONNXRUNTIME_ROOT_DIR}/lib")
 endif()
 
-
-# 创建测试可执行文件
-add_executable(onnx_helper_test main.cpp)
-
-target_link_libraries(onnx_helper_test PRIVATE OnnxRuntimeHelper)
-
-# Windows平台：复制DLL到输出目录
-if(WIN32)
-    add_custom_command(TARGET onnx_helper_test POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${ONNXRUNTIME_ROOT_DIR}/bin/onnxruntime.dll"
-        $<TARGET_FILE_DIR:onnx_helper_test>
-        COMMENT "复制onnxruntime.dll到输出目录"
-    )
-    
-    # 如果有CUDA provider DLL，也复制
-    if(EXISTS "${ONNXRUNTIME_ROOT_DIR}/bin/onnxruntime_providers_cuda.dll")
-        add_custom_command(TARGET onnx_helper_test POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ONNXRUNTIME_ROOT_DIR}/bin/onnxruntime_providers_cuda.dll"
-            $<TARGET_FILE_DIR:onnx_helper_test>
-            COMMENT "复制CUDA provider DLL到输出目录"
-        )
+# 辅助宏：为Windows目标复制运行时DLL
+function(copy_ort_dlls TARGET_NAME)
+    if(WIN32)
+        if(EXISTS "${ONNXRUNTIME_ROOT_DIR}/bin/onnxruntime.dll")
+            add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ONNXRUNTIME_ROOT_DIR}/bin/onnxruntime.dll"
+                $<TARGET_FILE_DIR:${TARGET_NAME}>
+                COMMENT "复制 onnxruntime.dll 到 ${TARGET_NAME} 输出目录"
+            )
+        endif()
+        if(EXISTS "${ONNXRUNTIME_ROOT_DIR}/bin/onnxruntime_providers_cuda.dll")
+            add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ONNXRUNTIME_ROOT_DIR}/bin/onnxruntime_providers_cuda.dll"
+                $<TARGET_FILE_DIR:${TARGET_NAME}>
+                COMMENT "复制 CUDA provider DLL 到 ${TARGET_NAME} 输出目录"
+            )
+        endif()
     endif()
-endif()
+endfunction()
+
+# ==================== 示例程序 ====================
+add_executable(onnx_helper_test examples/main.cpp)
+target_link_libraries(onnx_helper_test PRIVATE OnnxRuntimeHelper)
+copy_ort_dlls(onnx_helper_test)
+
+add_executable(check_nlp_models examples/check_nlp_models.cpp)
+target_link_libraries(check_nlp_models PRIVATE OnnxRuntimeHelper)
+copy_ort_dlls(check_nlp_models)
+
+# ==================== 测试程序 ====================
+add_executable(test_basic tests/test_basic.cpp)
+target_link_libraries(test_basic PRIVATE OnnxRuntimeHelper)
+copy_ort_dlls(test_basic)
+
+add_executable(unit_tests tests/unit_tests.cpp)
+target_link_libraries(unit_tests PRIVATE OnnxRuntimeHelper)
+copy_ort_dlls(unit_tests)
 
 # 打印配置信息
-message(STATUS "ONNX Runtime根目录: ${ONNXRUNTIME_ROOT_DIR}")
+message(STATUS "ONNX Runtime 根目录: ${ONNXRUNTIME_ROOT_DIR}")
 message(STATUS "包含目录: ${ONNXRUNTIME_ROOT_DIR}/include")
 message(STATUS "库目录: ${ONNXRUNTIME_ROOT_DIR}/lib")
-
-# 创建基础测试可执行文件
-add_executable(test_basic test_basic.cpp)
-target_link_libraries(test_basic PRIVATE OnnxRuntimeHelper)
-
-# 创建单元测试可执行文件
-add_executable(unit_tests unit_tests.cpp)
-target_link_libraries(unit_tests PRIVATE OnnxRuntimeHelper)
-
-# 创建NLP模型检查程序
-add_executable(check_nlp_models check_nlp_models.cpp)
-target_link_libraries(check_nlp_models PRIVATE OnnxRuntimeHelper)
-
-# 创建文本分类独立测试程序
-add_executable(test_text_classifier test_text_classifier.cpp)
-target_link_libraries(test_text_classifier PRIVATE OnnxRuntimeHelper)
-
-
-
-

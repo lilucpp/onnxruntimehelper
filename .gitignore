@@ -1,5 +1,11 @@
 build/
-build_x86/
+build_*/
+cmake-build-*/
+.vs/
+.vscode/
+*.user
+CMakeUserPresets.json
+
 cppjieba/
 datas/
 dict/
