@@ -48,16 +48,19 @@ onnxruntimehelper/
 ├── src/
 │   └── OnnxRuntimeHelper.cpp    # 会话管理、EP 配置、字符串张量与元数据实现
 ├── examples/
-│   ├── main.cpp                 # 基础用法、GPU 加速、多数据类型等综合示例
-│   └── check_nlp_models.cpp     # NLP 文本分类模型推理示例
+│   ├── main.cpp                   # 基础用法、GPU 加速、多数据类型等综合示例
+│   ├── check_nlp_models.cpp       # NLP 文本分类模型推理示例
+│   └── ppocr_and_cls_example.cpp  # 图像分类（ResNet）与 PP-OCRv6 Tiny 识别示例
 ├── tests/
 │   ├── test_basic.cpp           # 基础编译、链接与接口冒烟测试
 │   └── unit_tests.cpp           # 基于真实 ONNX 模型（MNIST / ResNet18 等）的单元测试
 ├── docs/
-│   ├── 使用文档.md              # 详细 API 参考与进阶示例
-│   ├── 获取ONNX_Runtime.md      # ONNX Runtime 1.17.3 下载与环境配置指南
-│   └── 单元测试说明.md          # 测试模型下载与测试用例说明
-├── CMakeLists.txt               # CMake 构建配置（C++17）
+│   ├── 使用文档.md                # 详细 API 参考与进阶示例
+│   ├── 获取ONNX_Runtime.md        # ONNX Runtime 1.17.3 下载与环境配置指南
+│   └── 单元测试说明.md            # 测试模型下载与测试用例说明
+├── scripts/
+│   └── setup_and_build.py         # 一键拉取 ONNX Runtime、模型并编译测试脚本
+├── CMakeLists.txt                 # CMake 构建配置（C++17）
 └── README.md
 ```
 
@@ -74,6 +77,16 @@ onnxruntimehelper/
 > 请先按照 [docs/获取ONNX_Runtime.md](./docs/获取ONNX_Runtime.md) 下载并解压 `onnxruntime-v1.17.3` 到项目根目录（或通过 CMake 参数 `-DONNXRUNTIME_ROOT_DIR=/your/path` 指定路径）。
 
 ### 编译与运行
+
+**方式一：一键脚本（自动拉取 ONNX Runtime 1.17.3、测试模型并编译运行测试）**
+
+```bash
+python3 scripts/setup_and_build.py
+# 可选开启 ASan/UBSan：
+python3 scripts/setup_and_build.py --sanitizers
+```
+
+**方式二：手动编译**
 
 ```bash
 # 1. 配置构建
@@ -129,13 +142,14 @@ int main() {
 
 | 类别 | 方法签名 | 说明 |
 | :--- | :--- | :--- |
-| **构造与初始化** | `OnnxRuntimeHelper(model_path, providers)` | 加载模型并按顺序初始化执行提供程序（默认 `{ExecutionProvider::CPU}`） |
-| **张量创建** | `CreateTensor<T>(data, shape)` | 创建数值类型张量（`float`、`int32_t`、`int64_t`、`double` 等），校验元素数量与形状匹配 |
+| **构造与初始化** | `OnnxRuntimeHelper(model_path, SessionConfig)` | 通过 `SessionConfig` 配置线程数、图优化级别、GPU 设备 ID、严格模式与执行提供程序 |
+| **便捷构造** | `OnnxRuntimeHelper(model_path, providers)` | 加载模型并按顺序初始化执行提供程序（默认 `{ExecutionProvider::CPU}`） |
+| **张量创建** | `CreateTensor<T>(data, shape)` | 创建数值类型张量（`float`、`int32_t`、`int64_t`、`double` 等），校验负维度、溢出与元素数量 |
 | **字符串张量** | `CreateStringTensor(strings, shape)` | 创建 `ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING` 张量 |
 | **执行推理** | `Run(input_names, input_tensors, output_names)` | 执行同步推理并返回输出张量列表 |
-| **数据提取** | `GetTensorData<T>(tensor)` | 将数值张量拷贝提取为 `std::vector<T>` |
+| **数据提取** | `GetTensorData<T>(tensor)` | 安全提取数值张量（自动校验元素类型与模板参数 `T` 一致） |
 | **字符串提取** | `GetStringTensorData(tensor)` | 将字符串张量提取为 `std::vector<std::string>` |
-| **元数据查询** | `GetInputNames()` / `GetOutputNames()` | 获取模型输入/输出节点名称列表 |
+| **元数据查询** | `GetInputNames()` / `GetOutputNames()` / `GetActiveProviders()` | 返回缓存的输入/输出节点名称列表与实际激活的执行提供程序 |
 | **形状查询** | `GetInputShape(index)` / `GetOutputShape(index)` / `GetTensorShape(tensor)` | 获取模型或运行时张量维度（动态维度返回 `-1`） |
 | **调试辅助** | `PrintModelInfo()` | 打印模型所有输入输出的名称与形状 |
 
@@ -147,13 +161,13 @@ int main() {
 
 1. **输入张量的非持有视图（Zero-Copy 语义）**
    `CreateTensor` 直接引用传入 `std::vector<T>` 的底层内存（内部使用 `const_cast` 适配 ORT C++ API），**不会拷贝输入数据**。请务必确保输入 `std::vector` 在 `Run()` 返回前保持有效且未发生重分配。
-2. **线程数与图优化级别配置时机**
-   当前构造函数会立即创建 `Ort::Session`（默认 `intra_op_num_threads = 1`，`ORT_ENABLE_ALL`）。因此在当前版本中，构造后调用 `SetThreadCount()` 或 `SetGraphOptimizationLevel()` 会打印警告并被忽略；若需自定义线程数，建议在 `OnnxRuntimeHelper::InitializeSession` 中调整或扩展构造参数。
+2. **会话配置与严格模式**
+   线程数（`intra_op_num_threads` / `inter_op_num_threads`）与图优化级别通过 `SessionConfig` 在构造时一次性生效。默认 `strict_provider = false`，硬件后端初始化失败会自动回退 CPU 并可通过 `GetActiveProviders()` 查询实际后端；若需禁止回退，将 `strict_provider` 设为 `true`。
 3. **执行提供程序（EP）平台与依赖约束**
    - `ExecutionProvider::DirectML` 仅在 Windows（`_WIN32`）下生效；
-   - `CUDA` / `TensorRT` / `OpenVINO` 依赖对应版本的 ONNX Runtime Provider 动态库，若初始化失败会捕获异常并自动回退至 CPU。
+   - `CUDA` / `TensorRT` / `OpenVINO` 依赖对应版本的 ONNX Runtime Provider 动态库。
 4. **线程安全性**
-   `OnnxRuntimeHelper` 禁用拷贝构造与拷贝赋值；单实例内的 `Ort::Session::Run` 遵循 ONNX Runtime 本身的线程安全模型，但建议每个工作线程持有独立输入/输出向量。
+   `OnnxRuntimeHelper` 禁用拷贝但支持移动语义；单实例内的 `Ort::Session::Run` 遵循 ONNX Runtime 本身的线程安全模型，建议每个工作线程持有独立输入/输出向量。
 
 ---
 

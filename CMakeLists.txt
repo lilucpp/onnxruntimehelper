@@ -9,6 +9,13 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# 可选开启 ASan / UBSan（仅 GCC / Clang）
+option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(ENABLE_SANITIZERS AND NOT MSVC)
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
 # 设置ONNX Runtime路径（支持通过 -DONNXRUNTIME_ROOT_DIR=... 覆盖）
 set(ONNXRUNTIME_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime-v1.17.3"
     CACHE PATH "Path to ONNX Runtime root directory")
@@ -73,6 +80,10 @@ add_executable(check_nlp_models examples/check_nlp_models.cpp)
 target_link_libraries(check_nlp_models PRIVATE OnnxRuntimeHelper)
 copy_ort_dlls(check_nlp_models)
 
+add_executable(ppocr_and_cls_example examples/ppocr_and_cls_example.cpp)
+target_link_libraries(ppocr_and_cls_example PRIVATE OnnxRuntimeHelper)
+copy_ort_dlls(ppocr_and_cls_example)
+
 # ==================== 测试程序 ====================
 add_executable(test_basic tests/test_basic.cpp)
 target_link_libraries(test_basic PRIVATE OnnxRuntimeHelper)
@@ -81,6 +92,11 @@ copy_ort_dlls(test_basic)
 add_executable(unit_tests tests/unit_tests.cpp)
 target_link_libraries(unit_tests PRIVATE OnnxRuntimeHelper)
 copy_ort_dlls(unit_tests)
+
+# ==================== CTest 注册 ====================
+enable_testing()
+add_test(NAME test_basic COMMAND test_basic)
+add_test(NAME unit_tests COMMAND unit_tests WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 # 打印配置信息
 message(STATUS "ONNX Runtime 根目录: ${ONNXRUNTIME_ROOT_DIR}")

@@ -3,8 +3,6 @@
 #include <sstream>
 #include <vector>
 #include <string>
-#include <codecvt>
-#include <locale>
 #include "OnnxRuntimeHelper.h"
 
 // 读取文本文件的所有行

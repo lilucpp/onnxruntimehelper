@@ -13,6 +13,7 @@ struct TestStats {
     int total = 0;
     int passed = 0;
     int failed = 0;
+    int skipped = 0;
     
     void Pass(const std::string& name) {
         total++;
@@ -25,14 +26,23 @@ struct TestStats {
         failed++;
         std::cerr << "  ✗ " << name << " - " << reason << std::endl;
     }
+
+    void Skip(const std::string& name, const std::string& reason) {
+        total++;
+        skipped++;
+        std::cout << "  - [SKIP] " << name << " (" << reason << ")" << std::endl;
+    }
     
     void PrintSummary() {
         std::cout << "\n========================================" << std::endl;
         std::cout << "  测试总结" << std::endl;
         std::cout << "========================================" << std::endl;
-        std::cout << "总计: " << total << " | 通过: " << passed << " | 失败: " << failed << std::endl;
+        std::cout << "总计: " << total
+                  << " | 通过: " << passed
+                  << " | 跳过: " << skipped
+                  << " | 失败: " << failed << std::endl;
         if (failed == 0) {
-            std::cout << "✓ 所有测试通过！" << std::endl;
+            std::cout << "✓ 所有已执行测试通过！" << std::endl;
         } else {
             std::cout << "✗ 有 " << failed << " 个测试失败" << std::endl;
         }
@@ -170,7 +180,7 @@ void TestMNIST(TestStats& stats) {
     std::string model_path = "models/mnist-12.onnx";
     
     if (!FileExists(model_path)) {
-        stats.Fail("MNIST模型加载", "模型文件不存在: " + model_path);
+        stats.Skip("MNIST测试", "模型文件不存在: " + model_path);
         return;
     }
     
@@ -245,8 +255,7 @@ void TestResNet18(TestStats& stats) {
     std::string model_path = "models/resnet18-v1-7.onnx";
     
     if (!FileExists(model_path)) {
-        stats.Fail("ResNet18模型加载", "模型文件不存在: " + model_path);
-        std::cout << "  提示: ResNet18模型较大，可能下载失败" << std::endl;
+        stats.Skip("ResNet18测试", "模型文件不存在: " + model_path);
         return;
     }
     
@@ -347,7 +356,7 @@ void TestDataTypes(TestStats& stats) {
             stats.Pass("Double类型张量创建");
             
         } else {
-            stats.Fail("数据类型测试", "需要MNIST模型文件");
+            stats.Skip("数据类型测试", "需要MNIST模型文件");
         }
         
     } catch (const std::exception& e) {
@@ -363,7 +372,7 @@ void TestBatchProcessing(TestStats& stats) {
     std::string model_path = "models/resnet18-v1-7.onnx";
     
     if (!FileExists(model_path)) {
-        std::cout << "  提示: ResNet18模型不存在，跳过批量处理测试" << std::endl;
+        stats.Skip("批量处理测试", "ResNet18模型不存在");
         return;
     }
     
@@ -413,24 +422,102 @@ void TestErrorHandling(TestStats& stats) {
     try {
         OnnxRuntimeHelper helper("nonexistent_model.onnx");
         stats.Fail("不存在模型错误处理", "应该抛出异常");
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
         stats.Pass("不存在模型错误处理");
     }
-    
-    // 测试形状不匹配
+
+    // 测试负维度形状校验（无需模型文件）
+    try {
+        onnxruntime_helper::detail::ComputeElementCount({-1, 4});
+        stats.Fail("负维度形状校验", "应该抛出 invalid_argument 异常");
+    } catch (const std::invalid_argument&) {
+        stats.Pass("负维度形状校验");
+    }
+
+    // 测试零维度形状校验（无需模型文件）
+    try {
+        size_t zero_count = onnxruntime_helper::detail::ComputeElementCount({2, 0, 5});
+        if (zero_count == 0) {
+            stats.Pass("零维度形状校验");
+        } else {
+            stats.Fail("零维度形状校验", "期望元素数为 0");
+        }
+    } catch (const std::exception& e) {
+        stats.Fail("零维度形状校验", e.what());
+    }
+
+    // 测试形状乘积溢出校验（无需模型文件）
+    try {
+        onnxruntime_helper::detail::ComputeElementCount({10000000000LL, 10000000000LL});
+        stats.Fail("形状溢出校验", "应该抛出 overflow_error 异常");
+    } catch (const std::overflow_error&) {
+        stats.Pass("形状溢出校验");
+    }
+
+    // 测试形状不匹配与类型不匹配（使用 MNIST 模型）
     if (FileExists("models/mnist-12.onnx")) {
         try {
             OnnxRuntimeHelper helper("models/mnist-12.onnx");
-            
+
             // 错误的数据大小
-            std::vector<float> wrong_data = {1.0f, 2.0f};  // 只有2个元素
-            std::vector<int64_t> shape = {2, 2};  // 但形状需要4个元素
-            
+            std::vector<float> wrong_data = {1.0f, 2.0f};
+            std::vector<int64_t> shape = {2, 2};
             auto tensor = helper.CreateTensor(wrong_data, shape);
             stats.Fail("形状不匹配错误处理", "应该抛出异常");
-            
-        } catch (const std::exception& e) {
+        } catch (const std::exception&) {
             stats.Pass("形状不匹配错误处理");
+        }
+
+        // 测试 GetTensorData<T> 类型不匹配校验
+        try {
+            OnnxRuntimeHelper helper("models/mnist-12.onnx");
+            std::vector<float> float_data = {1.0f, 2.0f};
+            auto float_tensor = helper.CreateTensor(float_data, {2});
+            (void)OnnxRuntimeHelper::GetTensorData<int32_t>(float_tensor);
+            stats.Fail("张量类型不匹配校验", "应该抛出异常");
+        } catch (const std::runtime_error&) {
+            stats.Pass("张量类型不匹配校验");
+        }
+
+        // 测试字符串张量往返（包含空字符串与中文）
+        try {
+            OnnxRuntimeHelper helper("models/mnist-12.onnx");
+            std::vector<std::string> texts = {"hello", "", "中文测试"};
+            auto str_tensor = helper.CreateStringTensor(texts, {3});
+            auto decoded = OnnxRuntimeHelper::GetStringTensorData(str_tensor);
+            if (decoded == texts) {
+                stats.Pass("字符串张量往返一致性");
+            } else {
+                stats.Fail("字符串张量往返一致性", "解码结果与输入不一致");
+            }
+
+            std::vector<std::string> empty_texts = {"", ""};
+            auto empty_str_tensor = helper.CreateStringTensor(empty_texts, {2});
+            auto decoded_empty = OnnxRuntimeHelper::GetStringTensorData(empty_str_tensor);
+            if (decoded_empty == empty_texts) {
+                stats.Pass("全空字符串张量往返");
+            } else {
+                stats.Fail("全空字符串张量往返", "全空字符串解码结果不一致");
+            }
+        } catch (const std::exception& e) {
+            stats.Fail("字符串张量往返测试", e.what());
+        }
+
+        // 测试 SessionConfig 与非严格回退状态
+        try {
+            OnnxRuntimeHelper::SessionConfig cfg;
+            cfg.providers = {OnnxRuntimeHelper::ExecutionProvider::CPU};
+            cfg.intra_op_num_threads = 2;
+            cfg.graph_optimization_level = 1;
+            OnnxRuntimeHelper helper("models/mnist-12.onnx", cfg);
+            if (!helper.GetActiveProviders().empty() &&
+                helper.GetActiveProviders()[0] == OnnxRuntimeHelper::ExecutionProvider::CPU) {
+                stats.Pass("SessionConfig 配置与 ActiveProviders 查询");
+            } else {
+                stats.Fail("SessionConfig 配置与 ActiveProviders 查询", "ActiveProviders 为空或不正确");
+            }
+        } catch (const std::exception& e) {
+            stats.Fail("SessionConfig 配置测试", e.what());
         }
     }
 }
@@ -442,7 +529,7 @@ void TestTextClassifier(TestStats& stats) {
     std::string model_path = "models/text_classifier_rbf.onnx";
     
     if (!FileExists(model_path)) {
-        std::cout << "  提示: 文本分类模型不存在，跳过测试" << std::endl;
+        stats.Skip("文本分类测试", "文本分类模型不存在");
         return;
     }
     
@@ -531,7 +618,7 @@ void TestNER(TestStats& stats) {
     std::string model_path = "models/ner_bilstm.onnx";
     
     if (!FileExists(model_path)) {
-        std::cout << "  提示: NER模型不存在，跳过测试" << std::endl;
+        stats.Skip("NER测试", "NER模型不存在");
         return;
     }
     
